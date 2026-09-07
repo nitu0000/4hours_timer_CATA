@@ -6,7 +6,7 @@
 <title>4時間後の時刻計算</title>
 <link rel="stylesheet" href="style.css">
 <style>
-/* 参加者と備考入力の簡易スタイル追加（必要に応じてstyle.css側で調整してください） */
+/* 参加者と備考入力のスタイル */
 .input-field {
   margin-top: 10px;
   display: flex;
@@ -17,7 +17,7 @@
   font-size: 0.9em;
   font-weight: bold;
 }
-.input-field input, .input-field textarea {
+.input-field input {
   padding: 8px;
   border: 1px solid #ccc;
   border-radius: 4px;
@@ -25,12 +25,18 @@
   box-sizing: border-box;
 }
 
-/* 一覧表のレイアウト調整（列が増えたため追加） */
+/* 一覧表のレイアウト調整 */
 .list .row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1.2fr 1.5fr 1.5fr;
   gap: 8px;
   align-items: center;
+}
+
+/* 準備完了（0秒到達時）のスタイル強調 */
+.ready {
+  color: #28a745;
+  font-weight: bold;
 }
 </style>
 </head>
@@ -53,15 +59,14 @@
     <div class="countdown" id="countdown">残り時間：--:--:--</div>
   </div>
 
-  <!-- 参加者と備考の入力欄を追加 -->
   <div class="input-field">
     <label for="members">参加者</label>
-    <input type="text" id="members" placeholder="例: ぺこ、たけとみー">
+    <input type="text" id="members" placeholder="例: 太郎, 花子">
   </div>
 
   <div class="input-field">
     <label for="memo">備考</label>
-    <input type="text" id="memo" placeholder="例: 成功とか失敗とか">
+    <input type="text" id="memo" placeholder="例: 失敗、〇〇待ち など">
   </div>
 </div>
 
@@ -98,7 +103,6 @@ firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
 const categories = ["飛行場","オイルリグ","客船","ヒューメイン","アーティファクト","パシフィック","ユニオン"];
-// データ構造を オブジェクト形式 に変更 { "飛行場": { time: "12:00", members: "...", memo: "..." } }
 let crimeData = {};
 let current = "飛行場";
 
@@ -114,7 +118,6 @@ const rows = document.getElementById("rows");
 db.ref("crime_cooltimes").on("value", (snapshot) => {
   const val = snapshot.val() || {};
   
-  // 過去データ（文字列のみ）との互換性維持
   crimeData = {};
   categories.forEach(cat => {
     if (typeof val[cat] === 'string') {
@@ -124,7 +127,6 @@ db.ref("crime_cooltimes").on("value", (snapshot) => {
     }
   });
 
-  // 現在選択中のタブに入力値を反映（自身が入力中以外のデータ同期に対応）
   const currentData = crimeData[current] || {};
   if (document.activeElement !== inputTime) inputTime.value = currentData.time || "";
   if (document.activeElement !== inputMembers) inputMembers.value = currentData.members || "";
@@ -139,7 +141,6 @@ function saveData() {
   db.ref("crime_cooltimes").set(crimeData);
 }
 
-// フォームの入力をデータオブジェクトに反映して保存
 function updateCurrentData() {
   if (!crimeData[current]) {
     crimeData[current] = {};
@@ -156,7 +157,7 @@ categories.forEach((name, i) => {
   b.className = "tab" + (i === 0 ? " active" : "");
   b.textContent = name;
   b.onclick = () => {
-    updateCurrentData(); // 切替前に入力内容を反映・保存
+    updateCurrentData();
 
     current = name;
     document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
@@ -181,26 +182,65 @@ function add4h(t){
   return String(Math.floor(total/60)).padStart(2,"0")+":"+String(total%60).padStart(2,"0");
 }
 
-function nextTarget(t){
-  const [h,m]=t.split(":").map(Number);
-  const now=new Date();
-  let target=new Date(now);
-  target.setHours(h,m,0,0);
-  if(target<=now) target.setDate(target.getDate()+1);
-  return target;
+// 4時間後の完了日時（Dateオブジェクト）を取得する関数
+function getTargetDate(t){
+  if(!t) return null;
+  const [h,m] = t.split(":").map(Number);
+  const now = new Date();
+  
+  // 開始時刻を設定
+  let start = new Date(now);
+  start.setHours(h, m, 0, 0);
+  
+  // 未来の時間（例えば今23時で開始時刻が01時の場合）であれば前日スタートとみなす
+  if (start > now) {
+    start.setDate(start.getDate() - 1);
+  }
+  
+  // 開始時刻から4時間後（240分後）を計算
+  return new Date(start.getTime() + 4 * 60 * 60 * 1000);
 }
 
-function remaining(t){
-  if(!t) return "--:--:--";
-  let ms=nextTarget(add4h(t))-new Date();
-  if(ms<0) ms=0;
-  const s=Math.floor(ms/1000);
-  return String(Math.floor(s/3600)).padStart(2,"0")+":"+String(Math.floor(s%3600/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
+// 残り時間（ミリ秒）を取得する関数
+function getRemainingMs(t) {
+  const target = getTargetDate(t);
+  if (!target) return null;
+  const diff = target - new Date();
+  return diff > 0 ? diff : 0;
+}
+
+// 残り時間の表示用文字列を生成
+function formatRemaining(t) {
+  if (!t) return { text: "--:--:--", isReady: false };
+  
+  const ms = getRemainingMs(t);
+  if (ms === 0) {
+    return { text: "✓ 実行可能", isReady: true };
+  }
+  
+  const s = Math.floor(ms / 1000);
+  const text = String(Math.floor(s / 3600)).padStart(2, "0") + ":" +
+               String(Math.floor((s % 3600) / 60)).padStart(2, "0") + ":" +
+               String(s % 60).padStart(2, "0");
+               
+  return { text: text, isReady: false };
 }
 
 function calculate() {
   result.textContent = add4h(inputTime.value) || "--:--";
-  countdown.textContent = inputTime.value ? "残り時間：" + remaining(inputTime.value) : "残り時間：--:--:--";
+  
+  if (inputTime.value) {
+    const rem = formatRemaining(inputTime.value);
+    countdown.textContent = rem.isReady ? "状態：" + rem.text : "残り時間：" + rem.text;
+    if (rem.isReady) {
+      countdown.classList.add("ready");
+    } else {
+      countdown.classList.remove("ready");
+    }
+  } else {
+    countdown.textContent = "残り時間：--:--:--";
+    countdown.classList.remove("ready");
+  }
 }
 
 function render() {
@@ -210,6 +250,8 @@ function render() {
     const t = item.time;
     const members = item.members;
     const memo = item.memo;
+    
+    const rem = formatRemaining(t);
 
     const row = document.createElement("div");
     row.className = "row";
@@ -217,7 +259,7 @@ function render() {
       <div class="name">${name}</div>
       <div class="time">${t || '<span class="empty">未設定</span>'}</div>
       <div class="after">${t ? add4h(t) : '<span class="empty">--:--</span>'}</div>
-      <div class="remaining">${t ? remaining(t) : '<span class="empty">--:--:--</span>'}</div>
+      <div class="remaining ${rem.isReady ? 'ready' : ''}">${t ? rem.text : '<span class="empty">--:--:--</span>'}</div>
       <div class="members">${members || '<span class="empty">-</span>'}</div>
       <div class="memo">${memo || '<span class="empty">-</span>'}</div>
     `;
@@ -225,7 +267,7 @@ function render() {
   });
 }
 
-// 入力イベント（変更時にクラウドへ即時同期）
+// 入力イベント
 inputTime.addEventListener("input", updateCurrentData);
 inputMembers.addEventListener("input", updateCurrentData);
 inputMemo.addEventListener("input", updateCurrentData);
