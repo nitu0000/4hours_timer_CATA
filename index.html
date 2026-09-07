@@ -5,6 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>4時間後の時刻計算</title>
 <link rel="stylesheet" href="style.css">
+<style>
+/* 参加者と備考入力の簡易スタイル追加（必要に応じてstyle.css側で調整してください） */
+.input-field {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.input-field label {
+  font-size: 0.9em;
+  font-weight: bold;
+}
+.input-field input, .input-field textarea {
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 一覧表のレイアウト調整（列が増えたため追加） */
+.list .row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1.2fr 1.5fr 1.5fr;
+  gap: 8px;
+  align-items: center;
+}
+</style>
 </head>
 <body>
 <div class="container">
@@ -13,61 +41,139 @@
 <div class="tabs" id="tabs"></div>
 
 <div class="input-area">
-<label for="time">開始時刻</label>
-<input type="time" id="time">
-<div class="arrow">↓</div>
-<div class="result">
-<div class="result-label">4時間後</div>
-<div id="result">--:--</div>
-<div class="countdown" id="countdown">残り時間：--:--:--</div>
-</div>
+  <div class="input-field">
+    <label for="time">開始時刻</label>
+    <input type="time" id="time">
+  </div>
+
+  <div class="arrow">↓</div>
+  <div class="result">
+    <div class="result-label">4時間後</div>
+    <div id="result">--:--</div>
+    <div class="countdown" id="countdown">残り時間：--:--:--</div>
+  </div>
+
+  <!-- 参加者と備考の入力欄を追加 -->
+  <div class="input-field">
+    <label for="members">参加者</label>
+    <input type="text" id="members" placeholder="例: 太郎, 花子">
+  </div>
+
+  <div class="input-field">
+    <label for="memo">備考</label>
+    <input type="text" id="memo" placeholder="例: 失敗、〇〇待ち など">
+  </div>
 </div>
 
 <h2>カテゴリー一覧</h2>
 <div class="list">
-<div class="row header"><div>カテゴリー</div><div>開始</div><div>4時間後</div><div>残り時間</div></div>
-<div id="rows"></div>
+  <div class="row header">
+    <div>カテゴリー</div>
+    <div>開始</div>
+    <div>4時間後</div>
+    <div>残り時間</div>
+    <div>参加者</div>
+    <div>備考</div>
+  </div>
+  <div id="rows"></div>
 </div>
 </div>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
 <script>
-const categories=["飛行場","オイルリグ","客船","ヒューメイン","アーティファクト","パシフィック","ユニオン"];
+// 1. Firebaseの初期化
+const firebaseConfig = {
+  apiKey: "AIzaSyBLSPd2ytS4Qtj37Kbu7Lib3QvwC5hYKEY",
+  authDomain: "crime-cooltime.firebaseapp.com",
+  projectId: "crime-cooltime",
+  storageBucket: "crime-cooltime.firebasestorage.app",
+  messagingSenderId: "192334293714",
+  appId: "1:192334293714:web:129619c62e6876c4419b0b",
+  measurementId: "G-70TY410B11"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
 
-// 1. ページ読み込み時に localStorage から保存されたデータを取得（なければ空）
-const savedTimes = localStorage.getItem("crime_cooltimes");
-const times = savedTimes ? JSON.parse(savedTimes) : {};
+const categories = ["飛行場","オイルリグ","客船","ヒューメイン","アーティファクト","パシフィック","ユニオン"];
+// データ構造を オブジェクト形式 に変更 { "飛行場": { time: "12:00", members: "...", memo: "..." } }
+let crimeData = {};
+let current = "飛行場";
 
-let current="飛行場";
-const tabs=document.getElementById("tabs");
-const input=document.getElementById("time");
-const result=document.getElementById("result");
-const countdown=document.getElementById("countdown");
-const rows=document.getElementById("rows");
+const tabs = document.getElementById("tabs");
+const inputTime = document.getElementById("time");
+const inputMembers = document.getElementById("members");
+const inputMemo = document.getElementById("memo");
+const result = document.getElementById("result");
+const countdown = document.getElementById("countdown");
+const rows = document.getElementById("rows");
 
-categories.forEach((name,i)=>{
-  const b=document.createElement("button");
-  b.className="tab"+(i===0?" active":"");
-  b.textContent=name;
-  b.onclick=()=>{
-    if(input.value) {
-      times[current]=input.value;
-      saveData(); // 切り替え時にも保存
+// 2. データベースの更新をリアルタイム監視
+db.ref("crime_cooltimes").on("value", (snapshot) => {
+  const val = snapshot.val() || {};
+  
+  // 過去データ（文字列のみ）との互換性維持
+  crimeData = {};
+  categories.forEach(cat => {
+    if (typeof val[cat] === 'string') {
+      crimeData[cat] = { time: val[cat], members: "", memo: "" };
+    } else {
+      crimeData[cat] = val[cat] || { time: "", members: "", memo: "" };
     }
-    current=name;
-    document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+  });
+
+  // 現在選択中のタブに入力値を反映（自身が入力中以外のデータ同期に対応）
+  const currentData = crimeData[current] || {};
+  if (document.activeElement !== inputTime) inputTime.value = currentData.time || "";
+  if (document.activeElement !== inputMembers) inputMembers.value = currentData.members || "";
+  if (document.activeElement !== inputMemo) inputMemo.value = currentData.memo || "";
+
+  calculate();
+  render();
+});
+
+// 3. データをクラウドに保存する関数
+function saveData() {
+  db.ref("crime_cooltimes").set(crimeData);
+}
+
+// フォームの入力をデータオブジェクトに反映して保存
+function updateCurrentData() {
+  if (!crimeData[current]) {
+    crimeData[current] = {};
+  }
+  crimeData[current].time = inputTime.value;
+  crimeData[current].members = inputMembers.value;
+  crimeData[current].memo = inputMemo.value;
+  saveData();
+}
+
+// タブ生成処理
+categories.forEach((name, i) => {
+  const b = document.createElement("button");
+  b.className = "tab" + (i === 0 ? " active" : "");
+  b.textContent = name;
+  b.onclick = () => {
+    updateCurrentData(); // 切替前に入力内容を反映・保存
+
+    current = name;
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
     b.classList.add("active");
-    input.value=times[current]||"";
+
+    const item = crimeData[current] || { time: "", members: "", memo: "" };
+    inputTime.value = item.time || "";
+    inputMembers.value = item.members || "";
+    inputMemo.value = item.memo || "";
+
     calculate();
     render();
   };
   tabs.appendChild(b);
 });
 
-// 2. localStorage にデータを保存する関数を追加
-function saveData() {
-  localStorage.setItem("crime_cooltimes", JSON.stringify(times));
-}
-
+// 時間計算関数
 function add4h(t){
   if(!t) return "";
   const [h,m]=t.split(":").map(Number);
@@ -92,42 +198,42 @@ function remaining(t){
   return String(Math.floor(s/3600)).padStart(2,"0")+":"+String(Math.floor(s%3600/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
 }
 
-function calculate(){
-  result.textContent=add4h(input.value)||"--:--";
-  countdown.textContent=input.value ? "残り時間："+remaining(input.value) : "残り時間：--:--:--";
+function calculate() {
+  result.textContent = add4h(inputTime.value) || "--:--";
+  countdown.textContent = inputTime.value ? "残り時間：" + remaining(inputTime.value) : "残り時間：--:--:--";
 }
 
-function render(){
-  rows.innerHTML="";
-  categories.forEach(name=>{
-    const t=times[name];
-    const row=document.createElement("div");
-    row.className="row";
-    row.innerHTML=`<div class="name">${name}</div>
-    <div class="time">${t||'<span class="empty">未設定</span>'}</div>
-    <div class="after">${t?add4h(t):'<span class="empty">--:--</span>'}</div>
-    <div class="remaining">${t?remaining(t):'<span class="empty">--:--:--</span>'}</div>`;
+function render() {
+  rows.innerHTML = "";
+  categories.forEach(name => {
+    const item = crimeData[name] || {};
+    const t = item.time;
+    const members = item.members;
+    const memo = item.memo;
+
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `
+      <div class="name">${name}</div>
+      <div class="time">${t || '<span class="empty">未設定</span>'}</div>
+      <div class="after">${t ? add4h(t) : '<span class="empty">--:--</span>'}</div>
+      <div class="remaining">${t ? remaining(t) : '<span class="empty">--:--:--</span>'}</div>
+      <div class="members">${members || '<span class="empty">-</span>'}</div>
+      <div class="memo">${memo || '<span class="empty">-</span>'}</div>
+    `;
     rows.appendChild(row);
   });
 }
 
-// 3. 入力があった時に saveData() を実行して即座に保存
-input.addEventListener("input",()=>{
-  times[current]=input.value;
-  saveData();
+// 入力イベント（変更時にクラウドへ即時同期）
+inputTime.addEventListener("input", updateCurrentData);
+inputMembers.addEventListener("input", updateCurrentData);
+inputMemo.addEventListener("input", updateCurrentData);
+
+setInterval(() => {
   calculate();
   render();
-});
-
-setInterval(()=>{
-  calculate();
-  render();
-},1000);
-
-// 初期化時に最初のタブの入力欄をセット
-input.value = times[current] || "";
-calculate();
-render();
+}, 1000);
 </script>
 </body>
 </html>
